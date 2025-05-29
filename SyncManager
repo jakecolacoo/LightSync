@@ -1,31 +1,107 @@
 // SyncManager.cs
 
+using System;
+using System.Threading;
 using System.Threading.Tasks;
 
-public class SyncManager
+public class SyncManager : IDisposable
 {
     private readonly NanoleafController _nanoleaf;
     private readonly CyncController _cync;
+    private CancellationTokenSource _cts;
 
     public SyncManager(NanoleafController nanoleaf, CyncController cync)
     {
-        _nanoleaf = nanoleaf;
-        _cync = cync;
+        _nanoleaf = nanoleaf ?? throw new ArgumentNullException(nameof(nanoleaf));
+        _cync = cync ?? throw new ArgumentNullException(nameof(cync));
+
+        // Subscribe to Nanoleaf state changes
+        _nanoleaf.StateChanged += HandleNanoleafStateChanged;
+    }
+
+    private async void HandleNanoleafStateChanged(object sender, NanoleafStateEventArgs e)
+    {
+        Console.WriteLine($"SyncManager: Nanoleaf state changed to R:{e.R}, G:{e.G}, B:{e.B}. Updating Cync.");
+        try
+        {
+            await _cync.SetColorAsync(e.R, e.G, e.B);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SyncManager: Error updating Cync controller: {ex.Message}");
+            // Optionally, add more robust error handling or retry logic here
+        }
+    }
+
+    public async Task StartSyncAsync(CancellationTokenSource cts)
+    {
+        _cts = cts;
+        Console.WriteLine("SyncManager: Starting Nanoleaf event listener...");
+        try
+        {
+            // Start listening to Nanoleaf events. This task will run in the background.
+            // The CancellationToken will be used to stop the listener when requested.
+            await _nanoleaf.StartListeningToEventsAsync(_cts.Token);
+            Console.WriteLine("SyncManager: Nanoleaf event listener stopped."); // Will be reached when cancellation is triggered
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine("SyncManager: Nanoleaf event listening was explicitly canceled.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SyncManager: Error starting Nanoleaf event listener: {ex.Message}");
+            // Consider if re-throwing or other error handling is needed here
+        }
+    }
+
+    public void StopSync()
+    {
+        Console.WriteLine("SyncManager: Stopping Nanoleaf event listener...");
+        if (_cts != null && !_cts.IsCancellationRequested)
+        {
+            _cts.Cancel();
+        }
     }
 
     public async Task SyncColorAsync(int r, int g, int b)
     {
-        await Task.WhenAll(
-            _nanoleaf.SetColorAsync(r, g, b),
-            _cync.SetColorAsync(r, g, b)
-        );
+        Console.WriteLine($"SyncManager: Manually syncing color to R:{r}, G:{g}, B:{b} for both devices.");
+        try
+        {
+            await Task.WhenAll(
+                _nanoleaf.SetColorAsync(r, g, b),
+                _cync.SetColorAsync(r, g, b)
+            );
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SyncManager: Error during manual color sync: {ex.Message}");
+        }
     }
 
     public async Task SyncEffectAsync(string effectName)
     {
-        await Task.WhenAll(
-            _nanoleaf.SetEffectAsync(effectName),
-            _cync.SetEffectAsync(effectName)
-        );
+        Console.WriteLine($"SyncManager: Manually syncing effect to '{effectName}' for both devices.");
+        try
+        {
+            await Task.WhenAll(
+                _nanoleaf.SetEffectAsync(effectName),
+                _cync.SetEffectAsync(effectName)
+            );
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SyncManager: Error during manual effect sync: {ex.Message}");
+        }
+    }
+
+    public void Dispose()
+    {
+        // Unsubscribe from the event to prevent memory leaks
+        _nanoleaf.StateChanged -= HandleNanoleafStateChanged;
+        StopSync(); // Ensure cancellation token is triggered if not already
+        _cts?.Dispose();
+        GC.SuppressFinalize(this);
     }
 }

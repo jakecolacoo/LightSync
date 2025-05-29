@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework> <!-- Or your desired .NET version, e.g., net6.0, net7.0 -->
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- If you add any NuGet packages, they would be listed here -->
+    <!-- Example: <PackageReference Include="System.Text.Json" Version="8.0.0" /> -->
+    <!-- NanoleafController uses System.Text.Json, which is part of .NET Core 3.0+ / .NET 5+ -->
+    <!-- No explicit package needed for basic HttpClient, System.Text.Json if using a recent .NET SDK -->
+  </ItemGroup>
+
+</Project> 

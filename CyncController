@@ -1,28 +1,216 @@
 // CyncController.cs
 
+using System;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
+
+// Basic structure for Cync API responses (will need to be refined based on actual API)
+public class CyncAuthResponse
+{
+    public int UserId { get; set; }
+    public string AccessToken { get; set; }
+    public string RefreshToken { get; set; }
+    public int ExpireIn { get; set; }
+    public string CorpId { get; set; } // May not be needed for direct device control but often part of auth
+    public string Authorize { get; set; } // This seems to be the key for direct TCP in cbyge
+}
+
+public class CyncDevice
+{
+    public int Id { get; set; }
+    public string Name { get; set; }
+    public string Mac { get; set; }
+    // Add other properties as needed, e.g., IsOnline, Type, FirmwareVersion
+}
 
 public class CyncController
 {
-    private readonly string _deviceId;
-    private readonly string _authToken;
+    private readonly string _email;
+    private readonly string _password;
+    private string _cyncAccessToken; // For HTTP API calls
+    private string _cyncDirectAuthToken; // For direct TCP communication (from the "authorize" field)
+    private int _cyncUserId;
 
-    public CyncController(string deviceId, string authToken)
+    private static readonly HttpClient _httpClient = new HttpClient();
+    private const string CyncApiBaseUrl = "https://api-ge.xlink.cn/v2";
+
+    // Store the device ID for which this controller instance is targeted, if applicable.
+    // For now, we might control multiple devices after auth, or a specific one.
+    private string _targetDeviceId;
+
+    public CyncController(string email, string password, string targetDeviceId = null)
     {
-        _deviceId = deviceId;
-        _authToken = authToken;
-        // Add any required setup here
+        _email = email;
+        _password = password;
+        _targetDeviceId = targetDeviceId; // Optional: if this controller instance is for one specific device
+        Console.WriteLine($"CyncController initialized for email: {email}. Target Device ID: {targetDeviceId ?? "All"}. (NOTE: Actual Cync integration is PENDING)");
     }
+
+    public async Task<bool> AuthenticateAsync()
+    {
+        Console.WriteLine("Attempting Cync authentication...");
+        try
+        {
+            // Step 1: Initial Login
+            var loginPayload = new { email = _email, password = _password, corp_id = "1007d2ad150c4000" }; // corp_id seems fixed for Cync app
+            string jsonLoginPayload = JsonSerializer.Serialize(loginPayload);
+            var loginContent = new StringContent(jsonLoginPayload, Encoding.UTF8, "application/json");
+
+            HttpResponseMessage response = await _httpClient.PostAsync($"{CyncApiBaseUrl}/user_auth/local", loginContent);
+
+            string responseBody = await response.Content.ReadAsStringAsync();
+            Console.WriteLine($"Login response status: {response.StatusCode}");
+            Console.WriteLine($"Login response body: {responseBody}");
+
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized) // Expecting 401 if 2FA is needed
+            {
+                // Older cbyge suggests 2FA is needed if specific error, newer seems to imply it by default for recent accounts.
+                // Let's assume a 401 means 2FA is required OR bad credentials.
+                // The cbyge login.go implies a request to /user_2fa/request_code is the next step if 2FA is active.
+                // However, the Cync app flow might request it after the first login attempt that signals 2FA is required.
+
+                Console.WriteLine("2FA might be required, or login failed. Attempting to request 2FA code.");
+                // No specific payload needed for request_code according to cbyge analysis
+                var request2FACodePayload = new { email = _email, corp_id = "1007d2ad150c4000", type = 1 }; // type=1 for email code
+                string json2FARequestPayload = JsonSerializer.Serialize(request2FACodePayload);
+                var request2FACodeContent = new StringContent(json2FARequestPayload, Encoding.UTF8, "application/json");
+
+                // This request needs the access_token from the *initial* login attempt, even if it failed with 401,
+                // if that initial 401 response still provided a temporary token. This part is tricky and depends on API behavior.
+                // The cbyge login.go does a direct call to Login2FA which handles this.
+                // For now, let's assume request_code doesn't need prior auth or uses basic auth if any.
+                // The `cbyge` `login_2fa` tool directly calls `/v2/user_2fa/request_code` then `/v2/user_2fa/verify_code`.
+                // It seems the request_code endpoint itself doesn't require a prior access token from a failed login.
+
+                response = await _httpClient.PostAsync($"{CyncApiBaseUrl}/user_2fa/request_code", request2FACodeContent);
+                responseBody = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"Request 2FA code response status: {response.StatusCode}");
+                Console.WriteLine($"Request 2FA code response body: {responseBody}");
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    Console.WriteLine("Failed to request 2FA code.");
+                    return false;
+                }
+
+                Console.Write("Please enter the 2FA code sent to your email: ");
+                string twoFACode = Console.ReadLine();
+
+                var verifyCodePayload = new { email = _email, corp_id = "1007d2ad150c4000", code = twoFACode };
+                string jsonVerifyPayload = JsonSerializer.Serialize(verifyCodePayload);
+                var verifyContent = new StringContent(jsonVerifyPayload, Encoding.UTF8, "application/json");
+
+                response = await _httpClient.PostAsync($"{CyncApiBaseUrl}/user_2fa/verify_code", verifyContent);
+                responseBody = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"Verify 2FA code response status: {response.StatusCode}");
+                Console.WriteLine($"Verify 2FA code response body: {responseBody}");
+            }
+
+            response.EnsureSuccessStatusCode(); // Throws if not HTTP 2xx
+
+            var authData = JsonSerializer.Deserialize<CyncAuthResponse>(responseBody, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            if (authData == null || string.IsNullOrEmpty(authData.AccessToken) || string.IsNullOrEmpty(authData.Authorize))
+            {
+                Console.WriteLine("Authentication successful, but token or authorize data is missing.");
+                return false;
+            }
+
+            _cyncAccessToken = authData.AccessToken;
+            _cyncDirectAuthToken = authData.Authorize; // This is the key for TCP according to cbyge
+            _cyncUserId = authData.UserId;
+
+            Console.WriteLine("Cync authentication successful!");
+            Console.WriteLine($" API Access Token: {_cyncAccessToken.Substring(0, Math.Min(_cyncAccessToken.Length, 10))}...");
+            Console.WriteLine($" Direct Auth Token: {_cyncDirectAuthToken.Substring(0, Math.Min(_cyncDirectAuthToken.Length, 10))}...");
+            return true;
+        }
+        catch (HttpRequestException ex)
+        {
+            Console.WriteLine($"Cync authentication HTTP error: {ex.Message}");
+            return false;
+        }
+        catch (JsonException ex)
+        {
+            Console.WriteLine($"Cync authentication JSON parsing error: {ex.Message}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Cync authentication error: {ex.Message}");
+            return false;
+        }
+    }
+
+    public async Task DiscoverDevicesAsync()
+    {
+        if (string.IsNullOrEmpty(_cyncAccessToken))
+        {
+            Console.WriteLine("Not authenticated. Call AuthenticateAsync first.");
+            return;
+        }
+
+        Console.WriteLine("Discovering Cync devices...");
+        try
+        {
+            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _cyncAccessToken);
+            // The endpoint for listing devices in cbyge is /v2/user/{user_id}/subscribe/devices
+            // However, some APIs use /v2/user/devices or similar. Let's try the one from cbyge.
+            HttpResponseMessage response = await _httpClient.GetAsync($"{CyncApiBaseUrl}/user/{_cyncUserId}/subscribe/devices");
+            response.EnsureSuccessStatusCode();
+            string responseBody = await response.Content.ReadAsStringAsync();
+            Console.WriteLine($"Device discovery response: {responseBody}");
+
+            // Assuming the response is a list of devices. This will need proper deserialization class.
+            // For now, just printing. You'll need a class like `List<CyncDevice>` and deserialize into it.
+            // var devices = JsonSerializer.Deserialize<List<CyncDevice>>(responseBody, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            // if (devices != null)
+            // {
+            //     Console.WriteLine($"Found {devices.Count} devices:");
+            //     foreach (var dev in devices)
+            //     {
+            //         Console.WriteLine($" - Name: {dev.Name}, ID: {dev.Id}, MAC: {dev.Mac}");
+            //     }
+            // }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error discovering Cync devices: {ex.Message}");
+        }
+        finally
+        {
+            _httpClient.DefaultRequestHeaders.Authorization = null;
+        }
+    }
+
 
     public async Task SetColorAsync(int r, int g, int b)
     {
-        // Placeholder: Implement actual Cync API call or integration
+        if (string.IsNullOrEmpty(_cyncDirectAuthToken))
+        {
+            Console.WriteLine("CYNC: Not authenticated for direct control. Call AuthenticateAsync first.");
+            return;
+        }
+        // TODO: Implement direct TCP communication using _cyncDirectAuthToken to set color
+        // This will involve creating a TCP client, connecting to cm-ge.xlink.cn:23778,
+        // and sending a specifically formatted binary packet.
+        // Refer to cbyge/controller.go SendPacket and related methods for packet structure.
+        Console.WriteLine($"CYNC: Would set color to R:{r}, G:{g}, B:{b} for device {_targetDeviceId ?? "(All/Target Not Set)"}. (TCP IMPLEMENTATION PENDING)");
         await Task.CompletedTask;
     }
 
     public async Task SetEffectAsync(string effectName)
     {
-        // Placeholder: Implement actual Cync API call or integration
+        Console.WriteLine($"CYNC: SetEffectAsync for '{effectName}' not yet implemented for cloud or direct TCP. (IMPLEMENTATION PENDING)");
+        await Task.CompletedTask;
+    }
+
+    // Placeholder for actual TCP packet sending logic
+    private async Task SendCyncPacketAsync(byte[] packetData)
+    {
+        // TODO: Implement TCP connection and packet sending to cm-ge.xlink.cn:23778
         await Task.CompletedTask;
     }
 }
