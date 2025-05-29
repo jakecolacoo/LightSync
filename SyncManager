@@ -1,0 +1,31 @@
+// SyncManager.cs
+
+using System.Threading.Tasks;
+
+public class SyncManager
+{
+    private readonly NanoleafController _nanoleaf;
+    private readonly CyncController _cync;
+
+    public SyncManager(NanoleafController nanoleaf, CyncController cync)
+    {
+        _nanoleaf = nanoleaf;
+        _cync = cync;
+    }
+
+    public async Task SyncColorAsync(int r, int g, int b)
+    {
+        await Task.WhenAll(
+            _nanoleaf.SetColorAsync(r, g, b),
+            _cync.SetColorAsync(r, g, b)
+        );
+    }
+
+    public async Task SyncEffectAsync(string effectName)
+    {
+        await Task.WhenAll(
+            _nanoleaf.SetEffectAsync(effectName),
+            _cync.SetEffectAsync(effectName)
+        );
+    }
+}
