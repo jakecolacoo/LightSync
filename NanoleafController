@@ -1,0 +1,38 @@
+// NanoleafController.cs
+
+using System.Net.Http;
+using System.Text;
+using System.Threading.Tasks;
+
+public class NanoleafController
+{
+    private readonly string _host;
+    private readonly string _authToken;
+    private readonly HttpClient _httpClient;
+
+    public NanoleafController(string host, string authToken)
+    {
+        _host = host;
+        _authToken = authToken;
+        _httpClient = new HttpClient();
+    }
+
+    private string BaseUrl => $"http://{_host}:16021/api/v1/{_authToken}";
+
+    public async Task SetColorAsync(int r, int g, int b)
+    {
+        // Nanoleaf API expects HSB, but this is a placeholder for RGB
+        var url = $"{BaseUrl}/state";
+        var json = $"{{\"color\":{{\"r\":{r},\"g\":{g},\"b\":{b}}}}}";
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        await _httpClient.PutAsync(url, content);
+    }
+
+    public async Task SetEffectAsync(string effectName)
+    {
+        var url = $"{BaseUrl}/effects";
+        var json = $"{{\"select\":\"{effectName}\"}}";
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        await _httpClient.PutAsync(url, content);
+    }
+}
